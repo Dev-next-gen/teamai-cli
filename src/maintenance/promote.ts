@@ -192,7 +192,7 @@ export async function executePromotion(
   return targetPath;
 }
 
-function inferCategoryByKeywords(content: string, title: string): 'skills' | 'rules' | 'docs' {
+export function inferCategoryByKeywords(content: string, title: string): 'skills' | 'rules' | 'docs' {
   const lower = (content + ' ' + title).toLowerCase();
 
   const skillSignals = ['command', 'cli', 'workflow', 'step-by-step', 'procedure', 'how to', 'recipe'];
@@ -203,7 +203,9 @@ function inferCategoryByKeywords(content: string, title: string): 'skills' | 'ru
   const ruleScore = ruleSignals.filter((s) => lower.includes(s)).length;
   const docScore = docSignals.filter((s) => lower.includes(s)).length;
 
-  if (ruleScore >= skillScore && ruleScore >= docScore) return 'rules';
+  const maxScore = Math.max(skillScore, ruleScore, docScore);
+  if (maxScore === 0) return 'docs';
+  if (ruleScore === maxScore) return 'rules';
   if (skillScore >= docScore) return 'skills';
   return 'docs';
 }

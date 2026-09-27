@@ -6,7 +6,7 @@ import os from 'node:os';
 import YAML from 'yaml';
 import matter from 'gray-matter';
 
-import { findPromotionCandidates, executePromotion } from '../maintenance/promote.js';
+import { findPromotionCandidates, executePromotion, inferCategoryByKeywords } from '../maintenance/promote.js';
 import type { UserVotesV2 } from '../types.js';
 
 // Mock AI client to avoid real CLI calls in tests
@@ -113,6 +113,39 @@ describe('findPromotionCandidates', () => {
 
     const candidates = await findPromotionCandidates([learningsDir], votesDir);
     expect(candidates.find((c) => c.docId === 'too-new')).toBeUndefined();
+  });
+});
+
+describe('inferCategoryByKeywords', () => {
+  it('returns docs when no signal keywords match', () => {
+    // Content with no skill/rule/doc signal words should fall back to docs,
+    // not to rules: a learning without any category signal is general
+    // documentation, not a mandatory constraint.
+    expect(inferCategoryByKeywords(
+      'Faster builds improve team velocity.',
+      'Build optimization notes',
+    )).toBe('docs');
+  });
+
+  it('returns rules when rule signals dominate', () => {
+    expect(inferCategoryByKeywords(
+      'You must always run the linter before committing.',
+      'Lint convention',
+    )).toBe('rules');
+  });
+
+  it('returns skills when skill signals dominate', () => {
+    expect(inferCategoryByKeywords(
+      'Step-by-step procedure for the CLI workflow.',
+      'Deploy recipe',
+    )).toBe('skills');
+  });
+
+  it('returns docs when doc signals dominate', () => {
+    expect(inferCategoryByKeywords(
+      'Architecture overview of the background decision context.',
+      'System design',
+    )).toBe('docs');
   });
 });
 
