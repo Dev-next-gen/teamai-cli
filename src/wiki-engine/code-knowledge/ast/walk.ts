@@ -20,6 +20,14 @@ export interface FileWalkResult {
    * name. Empty for every other language, and a subset of `symbols` for Swift.
    */
   swiftModuleSymbols: AstSymbol[];
+  /**
+   * Swift only: the declarations that sit in a type's body. Disjoint from
+   * `swiftModuleSymbols` — a member is not reachable by a bare name from a
+   * sibling file — and also a subset of `symbols`. What they are needed for is
+   * the opposite question: a bare name *inside* a type may be one of these, in
+   * which case it is not the module-level declaration of the same name.
+   */
+  swiftMemberSymbols: AstSymbol[];
   imports: AstImport[];
   callSites: AstCallSite[];
   implementsSites: AstImplementsSite[];
@@ -35,18 +43,19 @@ export function isAstParseableFile(relativePath: string): boolean {
 export function walkFile(file: CodeCollectedFile): FileWalkResult {
   const symbols: AstSymbol[] = [];
   const swiftModuleSymbols: AstSymbol[] = [];
+  const swiftMemberSymbols: AstSymbol[] = [];
   const imports: AstImport[] = [];
   const callSites: AstCallSite[] = [];
   const implementsSites: AstImplementsSite[] = [];
   const parseErrors: string[] = [];
 
   if (!isAstParseableFile(file.relativePath)) {
-    return { symbols, swiftModuleSymbols, imports, callSites, implementsSites, parseErrors };
+    return { symbols, swiftModuleSymbols, swiftMemberSymbols, imports, callSites, implementsSites, parseErrors };
   }
 
   if (Buffer.byteLength(file.content, "utf8") > MAX_FILE_BYTES) {
     parseErrors.push(`skipped large file: ${file.relativePath}`);
-    return { symbols, swiftModuleSymbols, imports, callSites, implementsSites, parseErrors };
+    return { symbols, swiftModuleSymbols, swiftMemberSymbols, imports, callSites, implementsSites, parseErrors };
   }
 
   const variant = grammarForExtension(path.extname(file.relativePath))!;
@@ -59,12 +68,12 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
     tree = parser.parse(file.content);
   } catch (error) {
     parseErrors.push(`parse failed: ${file.relativePath}: ${error instanceof Error ? error.message : String(error)}`);
-    return { symbols, swiftModuleSymbols, imports, callSites, implementsSites, parseErrors };
+    return { symbols, swiftModuleSymbols, swiftMemberSymbols, imports, callSites, implementsSites, parseErrors };
   }
 
   if (!tree) {
     parseErrors.push(`parse returned null: ${file.relativePath}`);
-    return { symbols, swiftModuleSymbols, imports, callSites, implementsSites, parseErrors };
+    return { symbols, swiftModuleSymbols, swiftMemberSymbols, imports, callSites, implementsSites, parseErrors };
   }
 
   try {
@@ -120,8 +129,12 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
         symbols.push(symbol);
         // Swift files in one module see each other without any import, so the
         // module index needs exactly the declarations a sibling can reach.
-        if (variant === "swift" && isSwiftModuleVisible(decl)) {
-          swiftModuleSymbols.push(symbol);
+        if (variant === "swift") {
+          if (isSwiftModuleVisible(decl)) {
+            swiftModuleSymbols.push(symbol);
+          } else if (isSwiftTypeMember(decl)) {
+            swiftMemberSymbols.push(symbol);
+          }
         }
         continue;
       }
@@ -166,7 +179,7 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
     tree.delete();
   }
 
-  return { symbols, swiftModuleSymbols, imports, callSites, implementsSites, parseErrors };
+  return { symbols, swiftModuleSymbols, swiftMemberSymbols, imports, callSites, implementsSites, parseErrors };
 }
 
 /**
@@ -208,6 +221,23 @@ function isSwiftModuleVisible(decl: Node): boolean {
     (child) =>
       child?.type === "visibility_modifier" && (child.text === "private" || child.text === "fileprivate")
   );
+}
+
+/**
+ * Whether this declaration is a member of a type.
+ *
+ * tree-sitter-swift puts the members of a class, a struct, an actor or an
+ * `extension` in a `class_body`, an enum's in an `enum_class_body` and a
+ * protocol's requirements in a `protocol_body`, so the parent node answers this
+ * on its own.
+ *
+ * A declaration inside a function body is deliberately not a member: it sits
+ * under `statements`, and nothing outside that body can be referring to it. The
+ * enclosing-scope bindings on the call site already cover that case.
+ */
+function isSwiftTypeMember(decl: Node): boolean {
+  const parent = decl.parent?.type;
+  return parent === "class_body" || parent === "enum_class_body" || parent === "protocol_body";
 }
 
 function symbolId(file: string, kind: AstSymbolKind, name: string): string {

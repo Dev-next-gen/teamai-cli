@@ -46,6 +46,7 @@ export async function extractStructuralGraph(
   const { repoRoot, files } = options;
   const symbols: StructuralGraphResult["symbols"] = [];
   const swiftModuleSymbols: StructuralGraphResult["symbols"] = [];
+  const swiftMemberSymbols: StructuralGraphResult["symbols"] = [];
   const imports: StructuralGraphResult["imports"] = [];
   const callSites: StructuralGraphResult["callSites"] = [];
   const implementsSites: AstImplementsSite[] = [];
@@ -76,6 +77,7 @@ export async function extractStructuralGraph(
     filesParsed++;
     symbols.push(...walked.symbols);
     swiftModuleSymbols.push(...walked.swiftModuleSymbols);
+    swiftMemberSymbols.push(...walked.swiftMemberSymbols);
     imports.push(...walked.imports);
     callSites.push(...walked.callSites);
     implementsSites.push(...walked.implementsSites);
@@ -92,8 +94,10 @@ export async function extractStructuralGraph(
   // SwiftPM target see each other with no import statement. Index the module
   // scopes once so conformance and call resolution can fall back to them —
   // over the module-visible declarations only, since a method or a `private`
-  // declaration is not reachable by name from a sibling file.
-  const swiftModules = buildSwiftModuleSymbolIndex(swiftModuleSymbols);
+  // declaration is not reachable by name from a sibling file. The members go in
+  // too, not as candidates but as the names a bare call inside a type may be
+  // referring to instead of the module level.
+  const swiftModules = buildSwiftModuleSymbolIndex(swiftModuleSymbols, swiftMemberSymbols);
 
   const resolvedImports = new Map<string, Awaited<ReturnType<typeof resolveImportSpecifier>>>();
   const resolvedKeys = new Set<string>();

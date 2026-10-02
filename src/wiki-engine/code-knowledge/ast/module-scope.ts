@@ -63,6 +63,8 @@ export interface SwiftModuleSymbolIndex {
   byModule: Map<string, AstSymbol[]>;
   /** File → its module scope key, for files that sit inside a known module. */
   scopeOfFile: Map<string, string>;
+  /** Module scope key → every name a type in that module declares as a member. */
+  memberNames: Map<string, Set<string>>;
 }
 
 /**
@@ -75,10 +77,33 @@ export interface SwiftModuleSymbolIndex {
  * resolve from another file, which is exactly the fabricated edge this layer
  * exists to avoid. `walk.ts` decides it, at the point where the declaration node
  * is still in hand.
+ *
+ * `memberSymbols` is the complement the lookup below cannot do without: the
+ * declarations that belong to a type's body. They are not candidates — a bare
+ * name never reaches a member of another file's type — but they say when a bare
+ * name is not a candidate for the module level either, which is what
+ * `swiftModuleDeclaresMember` is for.
  */
-export function buildSwiftModuleSymbolIndex(symbols: AstSymbol[]): SwiftModuleSymbolIndex {
+export function buildSwiftModuleSymbolIndex(
+  symbols: AstSymbol[],
+  memberSymbols: AstSymbol[]
+): SwiftModuleSymbolIndex {
   const byModule = new Map<string, AstSymbol[]>();
   const scopeOfFile = new Map<string, string>();
+  const memberNames = new Map<string, Set<string>>();
+
+  for (const symbol of memberSymbols) {
+    const scope = swiftModuleScope(symbol.file);
+    if (!scope) {
+      continue;
+    }
+    const names = memberNames.get(scope);
+    if (names) {
+      names.add(symbol.name);
+    } else {
+      memberNames.set(scope, new Set([symbol.name]));
+    }
+  }
 
   for (const symbol of symbols) {
     const scope = swiftModuleScope(symbol.file);
@@ -94,7 +119,37 @@ export function buildSwiftModuleSymbolIndex(symbols: AstSymbol[]): SwiftModuleSy
     }
   }
 
-  return { byModule, scopeOfFile };
+  return { byModule, scopeOfFile, memberNames };
+}
+
+/**
+ * Whether a type in `fromFile`'s module declares `name` as a member.
+ *
+ * A bare call inside a type runs that type's member when one is named after the
+ * callee, and the member can come from anywhere: the type itself, a superclass,
+ * an `extension` in a third file, a protocol's default implementation. None of
+ * those are visible to a lookup that only knows the module's top-level
+ * declarations, so a module-level function of the same name looks like the only
+ * candidate and is claimed as the target.
+ *
+ * Answering the question per type would need the inheritance and conformance
+ * graph of the whole module, which this layer does not build. Asking it of the
+ * module — does *any* type declare this member? — needs only the names already
+ * extracted, and errs the way the rest of the layer errs: a call that does turn
+ * out to be the module-level one, made from a module where some unrelated type
+ * declares a member of the same name, loses its edge. A missing edge still shows
+ * up as a gap; an invented one is read as a fact.
+ */
+export function swiftModuleDeclaresMember(
+  index: SwiftModuleSymbolIndex,
+  fromFile: string,
+  name: string
+): boolean {
+  const scope = index.scopeOfFile.get(fromFile) ?? swiftModuleScope(fromFile);
+  if (!scope) {
+    return false;
+  }
+  return index.memberNames.get(scope)?.has(name) === true;
 }
 
 /**

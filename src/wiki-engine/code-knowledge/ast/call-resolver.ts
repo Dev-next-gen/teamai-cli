@@ -1,7 +1,7 @@
 import type { AstCallSite, AstImport, AstSymbol } from "./types.js";
 import type { ResolvedImport } from "./import-resolver.js";
 import type { SwiftModuleSymbolIndex } from "./module-scope.js";
-import { findSwiftModuleSymbol } from "./module-scope.js";
+import { findSwiftModuleSymbol, swiftModuleDeclaresMember } from "./module-scope.js";
 
 export interface ImportBindingMap {
   /** Local name → exported symbol id in target file */
@@ -110,7 +110,17 @@ function resolveOneCall(
     // the walker reports those bindings per site: `run(work:) { work() }` calls
     // its parameter, so claiming a sibling file's `func work()` here would
     // invent an edge. Missing a resolution is the better failure.
-    if (swiftModules && !site.localBindings?.includes(callee)) {
+    //
+    // A member of the enclosing type wins over a module-level declaration in the
+    // same way, and it does not have to be declared in this file to do so: a
+    // superclass, an `extension` or a protocol default implementation anywhere in
+    // the module puts it in scope. `swiftModuleDeclaresMember` is what stands in
+    // for the inheritance graph this layer does not build.
+    if (
+      swiftModules &&
+      !site.localBindings?.includes(callee) &&
+      !swiftModuleDeclaresMember(swiftModules, site.fromFile, callee)
+    ) {
       const moduleSymbol = findSwiftModuleSymbol(swiftModules, site.fromFile, callee, ["function", "class"]);
       if (moduleSymbol) {
         return {

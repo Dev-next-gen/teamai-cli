@@ -256,6 +256,51 @@ describe('Swift module-scope resolution (web-tree-sitter WASM)', () => {
     expect(calls.get('handled')?.resolvedTargetFile).toBe('Sources/App/Service.swift');
   });
 
+  it('does not resolve a call to a member the enclosing type inherits', async () => {
+    const { result } = await extractFiles([
+      ['Sources/App/Base.swift', 'class Base {\n  func work() -> Int { return 1 }\n}\n'],
+      ['Sources/App/Sub.swift', 'class Sub: Base {\n  func run() -> Int { return work() }\n}\n'],
+      ['Sources/App/Global.swift', 'func work() -> Int { return 2 }\n'],
+    ]);
+
+    // `Sub` inherits `work()` from `Base`, so that member is what the call runs.
+    // The top-level `func work()` in a third file is not, and an edge to it is an
+    // invented one.
+    const calls = new Map(result.callSites.map((c) => [c.calleeText, c]));
+    expect(calls.has('work')).toBe(true);
+    expect(calls.get('work')?.resolvedTargetFile).toBeUndefined();
+    expect(result.edges.filter((e) => e.relation === 'REFERENCES')).toHaveLength(0);
+  });
+
+  it('does not resolve a call to a member an extension in another file adds', async () => {
+    const { result } = await extractFiles([
+      ['Sources/App/Sub.swift', 'class Sub {\n  func run() -> Int { return work() }\n}\n'],
+      ['Sources/App/Ext.swift', 'extension Sub {\n  func work() -> Int { return 3 }\n}\n'],
+      ['Sources/App/Global.swift', 'func work() -> Int { return 2 }\n'],
+    ]);
+
+    // The same shape with the member added by an extension rather than inherited.
+    const calls = new Map(result.callSites.map((c) => [c.calleeText, c]));
+    expect(calls.has('work')).toBe(true);
+    expect(calls.get('work')?.resolvedTargetFile).toBeUndefined();
+    expect(result.edges.filter((e) => e.relation === 'REFERENCES')).toHaveLength(0);
+  });
+
+  it('still resolves a call no type in the module declares as a member', async () => {
+    const { result } = await extractFiles([
+      ['Sources/App/Base.swift', 'class Base {\n  func other() -> Int { return 1 }\n}\n'],
+      ['Sources/App/Sub.swift', 'class Sub: Base {\n  func run() -> Int { return work() }\n}\n'],
+      ['Sources/App/Global.swift', 'func work() -> Int { return 2 }\n'],
+    ]);
+
+    // The control for the two cases above: no member is named `work`, so the
+    // module-level function is the only candidate and the edge still stands.
+    const references = result.edges.filter((e) => e.relation === 'REFERENCES');
+    expect(references).toHaveLength(1);
+    expect(references[0]?.from).toBe('Sources/App/Sub.swift');
+    expect(references[0]?.to).toBe('Sources/App/Global.swift');
+  });
+
   it('does not resolve a type nested inside another file', async () => {
     const { result } = await extractFiles([
       [
