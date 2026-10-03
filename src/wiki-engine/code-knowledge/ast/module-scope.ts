@@ -58,6 +58,12 @@ export function swiftModuleScope(relativePath: string): string | undefined {
   return undefined;
 }
 
+/** A name a type declares as a member, and the file that declares it. */
+export interface SwiftMemberName {
+  file: string;
+  name: string;
+}
+
 export interface SwiftModuleSymbolIndex {
   /** Module scope key → every declaration found in that module. */
   byModule: Map<string, AstSymbol[]>;
@@ -78,30 +84,32 @@ export interface SwiftModuleSymbolIndex {
  * exists to avoid. `walk.ts` decides it, at the point where the declaration node
  * is still in hand.
  *
- * `memberSymbols` is the complement the lookup below cannot do without: the
- * declarations that belong to a type's body. They are not candidates — a bare
- * name never reaches a member of another file's type — but they say when a bare
- * name is not a candidate for the module level either, which is what
- * `swiftModuleDeclaresMember` is for.
+ * `members` is the complement the lookup below cannot do without: the names
+ * that belong to a type's body. They are not candidates — a bare name never
+ * reaches a member of another file's type — but they say when a bare name is
+ * not a candidate for the module level either, which is what
+ * `swiftModuleDeclaresMember` is for. Names rather than symbols, because a
+ * property is callable under a bare name and is not a symbol this layer
+ * extracts.
  */
 export function buildSwiftModuleSymbolIndex(
   symbols: AstSymbol[],
-  memberSymbols: AstSymbol[]
+  members: SwiftMemberName[]
 ): SwiftModuleSymbolIndex {
   const byModule = new Map<string, AstSymbol[]>();
   const scopeOfFile = new Map<string, string>();
   const memberNames = new Map<string, Set<string>>();
 
-  for (const symbol of memberSymbols) {
-    const scope = swiftModuleScope(symbol.file);
+  for (const member of members) {
+    const scope = swiftModuleScope(member.file);
     if (!scope) {
       continue;
     }
     const names = memberNames.get(scope);
     if (names) {
-      names.add(symbol.name);
+      names.add(member.name);
     } else {
-      memberNames.set(scope, new Set([symbol.name]));
+      memberNames.set(scope, new Set([member.name]));
     }
   }
 

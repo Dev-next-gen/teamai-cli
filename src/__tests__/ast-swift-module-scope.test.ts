@@ -286,6 +286,23 @@ describe('Swift module-scope resolution (web-tree-sitter WASM)', () => {
     expect(result.edges.filter((e) => e.relation === 'REFERENCES')).toHaveLength(0);
   });
 
+  it('does not resolve a call to a callable property a type declares', async () => {
+    const { result } = await extractFiles([
+      ['Sources/App/Base.swift', 'class Base {\n  let work: () -> Int = { 1 }\n}\n'],
+      ['Sources/App/Sub.swift', 'class Sub: Base {\n  func run() -> Int { return work() }\n}\n'],
+      ['Sources/App/Global.swift', 'func work() -> Int { return 2 }\n'],
+    ]);
+
+    // A property holding a closure is called under a bare name exactly like a
+    // method, so it shadows the module level the same way. A `property_declaration`
+    // is not one of the symbols the Swift query captures, which is why the member
+    // names are read off the tree rather than off the symbol list.
+    const calls = new Map(result.callSites.map((c) => [c.calleeText, c]));
+    expect(calls.has('work')).toBe(true);
+    expect(calls.get('work')?.resolvedTargetFile).toBeUndefined();
+    expect(result.edges.filter((e) => e.relation === 'REFERENCES')).toHaveLength(0);
+  });
+
   it('still resolves a call no type in the module declares as a member', async () => {
     const { result } = await extractFiles([
       ['Sources/App/Base.swift', 'class Base {\n  func other() -> Int { return 1 }\n}\n'],

@@ -10,6 +10,7 @@ import {
   normalizeImportSpecifier,
   parseImportBindings
 } from "./import-bindings.js";
+import type { SwiftMemberName } from "./module-scope.js";
 import { grammarForExtension, getLanguage, getParser, getQuery } from "./parser-registry.js";
 import type { AstCallSite, AstImplementsSite, AstImport, AstSymbol, AstSymbolKind } from "./types.js";
 
@@ -21,13 +22,18 @@ export interface FileWalkResult {
    */
   swiftModuleSymbols: AstSymbol[];
   /**
-   * Swift only: the declarations that sit in a type's body. Disjoint from
+   * Swift only: every name a type in this file declares as a member, paired
+   * with the file so the module index can scope it. Disjoint from
    * `swiftModuleSymbols` — a member is not reachable by a bare name from a
-   * sibling file — and also a subset of `symbols`. What they are needed for is
-   * the opposite question: a bare name *inside* a type may be one of these, in
-   * which case it is not the module-level declaration of the same name.
+   * sibling file. What they are needed for is the opposite question: a bare
+   * name *inside* a type may be one of these, in which case it is not the
+   * module-level declaration of the same name.
+   *
+   * Names, not symbols: a `let work: () -> Int` is callable under a bare name
+   * just like a `func work()`, and a property is not a symbol this walker
+   * extracts, so the question cannot be answered off the symbol list.
    */
-  swiftMemberSymbols: AstSymbol[];
+  swiftMemberNames: SwiftMemberName[];
   imports: AstImport[];
   callSites: AstCallSite[];
   implementsSites: AstImplementsSite[];
@@ -43,19 +49,19 @@ export function isAstParseableFile(relativePath: string): boolean {
 export function walkFile(file: CodeCollectedFile): FileWalkResult {
   const symbols: AstSymbol[] = [];
   const swiftModuleSymbols: AstSymbol[] = [];
-  const swiftMemberSymbols: AstSymbol[] = [];
+  const swiftMemberNames: SwiftMemberName[] = [];
   const imports: AstImport[] = [];
   const callSites: AstCallSite[] = [];
   const implementsSites: AstImplementsSite[] = [];
   const parseErrors: string[] = [];
 
   if (!isAstParseableFile(file.relativePath)) {
-    return { symbols, swiftModuleSymbols, swiftMemberSymbols, imports, callSites, implementsSites, parseErrors };
+    return { symbols, swiftModuleSymbols, swiftMemberNames, imports, callSites, implementsSites, parseErrors };
   }
 
   if (Buffer.byteLength(file.content, "utf8") > MAX_FILE_BYTES) {
     parseErrors.push(`skipped large file: ${file.relativePath}`);
-    return { symbols, swiftModuleSymbols, swiftMemberSymbols, imports, callSites, implementsSites, parseErrors };
+    return { symbols, swiftModuleSymbols, swiftMemberNames, imports, callSites, implementsSites, parseErrors };
   }
 
   const variant = grammarForExtension(path.extname(file.relativePath))!;
@@ -68,12 +74,12 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
     tree = parser.parse(file.content);
   } catch (error) {
     parseErrors.push(`parse failed: ${file.relativePath}: ${error instanceof Error ? error.message : String(error)}`);
-    return { symbols, swiftModuleSymbols, swiftMemberSymbols, imports, callSites, implementsSites, parseErrors };
+    return { symbols, swiftModuleSymbols, swiftMemberNames, imports, callSites, implementsSites, parseErrors };
   }
 
   if (!tree) {
     parseErrors.push(`parse returned null: ${file.relativePath}`);
-    return { symbols, swiftModuleSymbols, swiftMemberSymbols, imports, callSites, implementsSites, parseErrors };
+    return { symbols, swiftModuleSymbols, swiftMemberNames, imports, callSites, implementsSites, parseErrors };
   }
 
   try {
@@ -83,6 +89,13 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
     // call would re-walk the enclosing declaration once for each of its calls.
     const swiftShadowedNames =
       variant === "swift" ? buildSwiftShadowedNames(tree.rootNode) : undefined;
+    if (variant === "swift") {
+      const names = new Set<string>();
+      collectSwiftMemberNames(tree.rootNode, names);
+      for (const name of names) {
+        swiftMemberNames.push({ file: file.relativePath, name });
+      }
+    }
 
     for (const match of query.matches(tree.rootNode)) {
       const byName = new Map(match.captures.map((c) => [c.name, c.node]));
@@ -129,12 +142,8 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
         symbols.push(symbol);
         // Swift files in one module see each other without any import, so the
         // module index needs exactly the declarations a sibling can reach.
-        if (variant === "swift") {
-          if (isSwiftModuleVisible(decl)) {
-            swiftModuleSymbols.push(symbol);
-          } else if (isSwiftTypeMember(decl)) {
-            swiftMemberSymbols.push(symbol);
-          }
+        if (variant === "swift" && isSwiftModuleVisible(decl)) {
+          swiftModuleSymbols.push(symbol);
         }
         continue;
       }
@@ -179,7 +188,7 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
     tree.delete();
   }
 
-  return { symbols, swiftModuleSymbols, swiftMemberSymbols, imports, callSites, implementsSites, parseErrors };
+  return { symbols, swiftModuleSymbols, swiftMemberNames, imports, callSites, implementsSites, parseErrors };
 }
 
 /**
@@ -224,20 +233,56 @@ function isSwiftModuleVisible(decl: Node): boolean {
 }
 
 /**
- * Whether this declaration is a member of a type.
- *
  * tree-sitter-swift puts the members of a class, a struct, an actor or an
  * `extension` in a `class_body`, an enum's in an `enum_class_body` and a
- * protocol's requirements in a `protocol_body`, so the parent node answers this
- * on its own.
+ * protocol's requirements in a `protocol_body`.
+ */
+const SWIFT_TYPE_BODIES = new Set(["class_body", "enum_class_body", "protocol_body"]);
+
+/**
+ * Every name the types in a file declare as a member.
+ *
+ * Read off the tree rather than off the symbols the query captures, because the
+ * query captures functions and types only: a `let work: () -> Int` is called as
+ * `work()` exactly like a `func work()`, and so is a `var` holding a closure, so
+ * a set built from function captures alone still lets the module-level fallback
+ * claim a bare call that one of them answers.
+ *
+ * A declaration names itself one of two ways, and both are taken here:
+ *
+ * - a `name` field holding an identifier — a method, a nested type, a
+ *   `typealias`, an `init`, an enum case;
+ * - a `pattern` child — how `property_declaration` and
+ *   `protocol_property_declaration` carry their name, including the several
+ *   names of `let (a, b) = ...`. Descending the pattern is what
+ *   `collectSwiftShadowedNames` already does for a local binding.
+ *
+ * A `subscript_declaration` has neither (its `name` field is the return type) and
+ * is not reachable by a bare name anyway, so it contributes nothing.
  *
  * A declaration inside a function body is deliberately not a member: it sits
- * under `statements`, and nothing outside that body can be referring to it. The
- * enclosing-scope bindings on the call site already cover that case.
+ * under `statements`, not under a type body, and nothing outside that body can
+ * be referring to it. The enclosing-scope bindings on the call site already
+ * cover that case.
  */
-function isSwiftTypeMember(decl: Node): boolean {
-  const parent = decl.parent?.type;
-  return parent === "class_body" || parent === "enum_class_body" || parent === "protocol_body";
+function collectSwiftMemberNames(node: Node, names: Set<string>): void {
+  if (SWIFT_TYPE_BODIES.has(node.type)) {
+    for (const member of namedChildrenOf(node)) {
+      const name = member.childForFieldName("name");
+      if (name && (name.type === "simple_identifier" || name.type === "type_identifier")) {
+        addSwiftName(name.text, names);
+        continue;
+      }
+      for (const child of namedChildrenOf(member)) {
+        if (child.type === "pattern") {
+          collectSwiftShadowedNames(child, names);
+        }
+      }
+    }
+  }
+  for (const child of namedChildrenOf(node)) {
+    collectSwiftMemberNames(child, names);
+  }
 }
 
 function symbolId(file: string, kind: AstSymbolKind, name: string): string {

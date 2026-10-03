@@ -5,6 +5,7 @@ import { type CodeFact } from "../code-extractors.js";
 import { structuralEdgesToCodeFacts, unresolvedImportsToGaps } from "./adapt-code-facts.js";
 import { buildImportBindingsForFile, callResolutionWeight, resolveCallSites } from "./call-resolver.js";
 import { buildFileExistenceChecker, resolveImportSpecifier } from "./import-resolver.js";
+import type { SwiftMemberName } from "./module-scope.js";
 import { buildSwiftModuleSymbolIndex, findSwiftModuleSymbol } from "./module-scope.js";
 import { ensureAstReady } from "./parser-registry.js";
 import type { AstExtractionGap, AstImplementsSite, StructuralEdge, StructuralGraphResult } from "./types.js";
@@ -46,7 +47,7 @@ export async function extractStructuralGraph(
   const { repoRoot, files } = options;
   const symbols: StructuralGraphResult["symbols"] = [];
   const swiftModuleSymbols: StructuralGraphResult["symbols"] = [];
-  const swiftMemberSymbols: StructuralGraphResult["symbols"] = [];
+  const swiftMemberNames: SwiftMemberName[] = [];
   const imports: StructuralGraphResult["imports"] = [];
   const callSites: StructuralGraphResult["callSites"] = [];
   const implementsSites: AstImplementsSite[] = [];
@@ -77,7 +78,7 @@ export async function extractStructuralGraph(
     filesParsed++;
     symbols.push(...walked.symbols);
     swiftModuleSymbols.push(...walked.swiftModuleSymbols);
-    swiftMemberSymbols.push(...walked.swiftMemberSymbols);
+    swiftMemberNames.push(...walked.swiftMemberNames);
     imports.push(...walked.imports);
     callSites.push(...walked.callSites);
     implementsSites.push(...walked.implementsSites);
@@ -94,10 +95,10 @@ export async function extractStructuralGraph(
   // SwiftPM target see each other with no import statement. Index the module
   // scopes once so conformance and call resolution can fall back to them —
   // over the module-visible declarations only, since a method or a `private`
-  // declaration is not reachable by name from a sibling file. The members go in
-  // too, not as candidates but as the names a bare call inside a type may be
-  // referring to instead of the module level.
-  const swiftModules = buildSwiftModuleSymbolIndex(swiftModuleSymbols, swiftMemberSymbols);
+  // declaration is not reachable by name from a sibling file. The member names
+  // go in too, not as candidates but as the names a bare call inside a type may
+  // be referring to instead of the module level.
+  const swiftModules = buildSwiftModuleSymbolIndex(swiftModuleSymbols, swiftMemberNames);
 
   const resolvedImports = new Map<string, Awaited<ReturnType<typeof resolveImportSpecifier>>>();
   const resolvedKeys = new Set<string>();
