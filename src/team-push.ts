@@ -908,6 +908,7 @@ export async function reportUsageToTeam(
   const reportsConfig = options?.selfConfig;
   const useReportsBranch = !!reportsConfig && usesBranchWorktree(reportsConfig);
   let restoreStats: (() => Promise<void>) | undefined;
+  let restoreVotes: (() => Promise<void>) | undefined;
 
   // Reports-branch writes use the reports-lock, not the partition sync-lock
   // (non-reentrant; pull() already holds it). The else-branch clone reset is
@@ -1009,9 +1010,20 @@ export async function reportUsageToTeam(
       try {
         if (votesDir && await pathExists(votesDir)) {
           const { syncVotesToTeam } = await import('./votes.js');
+          const localVotes = path.join(votesDir, `${username}.yaml`);
+          const stagedVotes = path.join(writeRoot, 'votes', `${username}.yaml`);
+          // syncVotesToTeam clears the local deltas as it merges them, so a report
+          // that does not land spends them with nothing published (#1027). The
+          // merge is remote + deltas: restoring one side alone would double them.
+          const previousLocal = await readFileSafe(localVotes);
+          const previousStaged = useReportsBranch ? await readFileSafe(stagedVotes) : null;
           const synced = await syncVotesToTeam(writeRoot, username, votesDir);
           if (synced) {
             filesToPush.push(`votes/${username}.yaml`);
+            restoreVotes = async () => {
+              if (previousLocal !== null) await writeFile(localVotes, previousLocal);
+              if (useReportsBranch) await writeFile(stagedVotes, previousStaged ?? '');
+            };
           }
         }
       } catch (e) {
@@ -1040,6 +1052,7 @@ export async function reportUsageToTeam(
       if (!pushed) {
         log.debug('Auto-report push was not confirmed; keeping local report data');
         await restoreStats?.();
+        await restoreVotes?.();
         return false;
       }
     } else {
@@ -1097,6 +1110,7 @@ export async function reportUsageToTeam(
       await pushRepoDirectly(repoPath, commitMsg, filesToPush);
     }
     restoreStats = undefined;
+    restoreVotes = undefined;
 
     // Success — truncate reported usage events (only if caller allows it)
     if (hasUsage && reportsConfig && !options?.skipTruncate) {
@@ -1130,8 +1144,9 @@ export async function reportUsageToTeam(
   } catch (e) {
     try {
       await restoreStats?.();
+      await restoreVotes?.();
     } catch (restoreError) {
-      log.error(`Could not restore report stats after failure: ${(restoreError as Error).message}`);
+      log.error(`Could not restore report data after failure: ${(restoreError as Error).message}`);
     }
     log.error(`Auto-report skipped: ${(e as Error).message}`);
     return false;

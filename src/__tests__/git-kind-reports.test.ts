@@ -8,10 +8,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { simpleGit } from 'simple-git';
 
-import { getDataHome, getReportsDir, REPORTS_WORKTREE_DIRNAME, type LocalConfig } from '../types.js';
+import { getDataHome, getReportsDir, getVotesDir, REPORTS_WORKTREE_DIRNAME, type LocalConfig, type UserVotesV2 } from '../types.js';
 import { commitAndPushReports, ensureReportsWorktree, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
 import { pushRepoDirectly } from '../utils/git.js';
 import { reportUsageToTeam } from '../team-push.js';
+import { hasPendingVoteDeltas } from '../votes.js';
 import { dataHomeKey, resolveHookConfig } from '../dashboard-collector.js';
 import { listMembers } from '../members.js';
 import { resolveProjectDataHome, saveLocalConfigForScope } from '../config.js';
@@ -688,5 +689,43 @@ describe('skill usage stays in the scope that recorded it (#748)', () => {
 
     await reportUsageToTeam(c.config.repo.localPath, 'alice', { selfConfig: c.config });
     expect(await reportedSkills(c.origin)).toEqual(['skill-c']);
+  });
+});
+
+describe('git-kind reports: a report that does not land keeps its vote deltas (#1027)', () => {
+  /** A reports branch no push can move, as a protected branch or an unreachable remote is. */
+  function refuseReportsPush(origin: string): void {
+    const hook = path.join(origin, 'hooks', 'update');
+    fs.writeFileSync(
+      hook,
+      `#!/bin/sh
+if [ "$1" = "refs/heads/teamai-reports" ]; then
+  echo "reports branch is protected" >&2
+  exit 1
+fi
+exit 0
+`,
+    );
+    fs.chmodSync(hook, 0o755);
+  }
+
+  it('leaves the deltas pending, so the next report retries them', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const cfg = gitConfig(clone, origin);
+    expect(await publish(cfg, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    refuseReportsPush(origin);
+
+    const votesDir = getVotesDir(cfg);
+    fs.mkdirSync(votesDir, { recursive: true });
+    const pending: UserVotesV2 = {
+      version: 2,
+      votes: { 'doc-1': { recalled_count: 1, upvoted_count: 0, last_recalled_at: '2026-01-01T00:00:00.000Z' } },
+      deltas: { 'doc-1': { recalled_delta: 1, upvoted_delta: 0 } },
+    };
+    fs.writeFileSync(path.join(votesDir, 'alice.yaml'), YAML.stringify(pending));
+
+    expect(await reportUsageToTeam(clone, 'alice', { skipTruncate: true, selfConfig: cfg })).toBe(false);
+    await expect(originReportsFile(origin, 'votes/alice.yaml')).rejects.toThrow();
+    expect(await hasPendingVoteDeltas(votesDir, 'alice')).toBe(true);
   });
 });
