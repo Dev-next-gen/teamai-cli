@@ -1356,7 +1356,7 @@ recallCmd
 
     const { autoDetectInit } = await import('./config.js');
     const { localConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
-    const paths = await maintenancePathsOrExit(localConfig);
+    const paths = await maintenancePathsOrExit(localConfig, cmdOpts.dryRun);
     if (!paths) return;
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
@@ -1443,7 +1443,7 @@ recallCmd
       findPromotionCandidates,
       executePromotion,
     } = await import('./maintenance/index.js');
-    const paths = await maintenancePathsOrExit(localConfig);
+    const paths = await maintenancePathsOrExit(localConfig, cmdOpts.dryRun);
     if (!paths) return;
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
@@ -1491,11 +1491,11 @@ recallCmd
  * the checkout and the way out, and has already been printed. Also when the
  * reports or learnings lock cannot be taken, so the checkout cannot be checked.
  */
-async function maintenancePathsOrExit(localConfig: LocalConfig): Promise<MaintenancePaths | undefined> {
+async function maintenancePathsOrExit(localConfig: LocalConfig, dryRun?: boolean): Promise<MaintenancePaths | undefined> {
   const { CheckoutLockedError, CheckoutUnavailableError, resolveMaintenancePaths } = await import('./maintenance/index.js');
   const { CheckoutRefusedError } = await import('./utils/branch-worktree.js');
   try {
-    return await resolveMaintenancePaths(localConfig);
+    return await resolveMaintenancePaths(localConfig, { dryRun });
   } catch (e) {
     if (e instanceof CheckoutLockedError || e instanceof CheckoutUnavailableError) {
       const { log } = await import('./utils/logger.js');
